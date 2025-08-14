@@ -1,0 +1,114 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import datetime as dt
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import KMeans
+from sklearn.decomposition import PCA
+
+# 1. Veri Setini Yükle ve Ön İşleme
+try:
+    df = pd.read_csv('online_retail.csv', encoding='latin1')
+except FileNotFoundError:
+    print("online_retail.csv dosyası bulunamadı. Lütfen dosya adını kontrol edin.")
+    exit()
+
+# Eksik 'Customer ID' değerlerini temizle
+df.dropna(subset=['Customer ID'], inplace=True)
+
+# İade işlemlerini çıkar (Quantity > 0 olanları al)
+df = df[df['Quantity'] > 0]
+
+# 'InvoiceDate' sütununu tarih formatına dönüştür
+df['InvoiceDate'] = pd.to_datetime(df['InvoiceDate'])
+
+# Her bir işlem için 'TotalPrice' sütununu oluştur
+df['TotalPrice'] = df['Quantity'] * df['Price']
+
+# 2. RFM Metriklerini Hesapla
+reference_date = df['InvoiceDate'].max() + dt.timedelta(days=1)
+rfm = df.groupby('Customer ID').agg({
+    'InvoiceDate': lambda date: (reference_date - date.max()).days,
+    'Invoice': 'nunique',
+    'TotalPrice': 'sum'
+})
+rfm.columns = ['Recency', 'Frequency', 'Monetary']
+
+# RFM verilerinin dağılımını düzeltmek için logaritmik dönüşüm uygula
+rfm_log = np.log1p(rfm)
+
+# 3. Verileri Ölçeklendir ve K-Means için Hazırla
+scaler = StandardScaler()
+rfm_scaled = scaler.fit_transform(rfm_log)
+rfm_scaled_df = pd.DataFrame(rfm_scaled, index=rfm_log.index, columns=rfm_log.columns)
+
+# 4. En Uygun Küme Sayısını Belirle (Elbow Metodu)
+ssd = []
+K_range = range(1, 11)
+for k in K_range:
+    kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
+    kmeans.fit(rfm_scaled_df)
+    ssd.append(kmeans.inertia_)
+
+plt.figure(figsize=(8, 6))
+plt.plot(K_range, ssd, 'bx-')
+plt.xlabel('Küme Sayısı (k)')
+plt.ylabel('Kümelerin İçi Kareler Toplamı (SSD)')
+plt.title('Elbow (Dirsek) Metodu ile En Uygun Küme Sayısı')
+plt.grid(True)
+plt.show()
+
+# 5. K-Means Kümelemesini Uygula (k=4 olarak kabul edildi)
+k = 4
+kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
+clusters = kmeans.fit_predict(rfm_scaled_df)
+rfm['Cluster'] = clusters
+
+# 6. Küme Profillerini Çıkar ve Görselleştir
+cluster_profiles = rfm.groupby('Cluster').agg({
+    'Recency': 'mean',
+    'Frequency': 'mean',
+    'Monetary': 'mean'
+}).sort_values(by='Monetary', ascending=False)
+
+print("Küme Profilleri (Ortalama RFM Değerleri):\n")
+print(cluster_profiles)
+
+fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+
+sns.barplot(x=cluster_profiles.index, y='Recency', data=cluster_profiles, ax=axes[0])
+axes[0].set_title('Ortalama Recency')
+axes[0].set_ylabel('Gün')
+axes[0].set_xlabel('Küme')
+
+sns.barplot(x=cluster_profiles.index, y='Frequency', data=cluster_profiles, ax=axes[1])
+axes[1].set_title('Ortalama Frequency')
+axes[1].set_ylabel('Sipariş Sayısı')
+axes[1].set_xlabel('Küme')
+
+sns.barplot(x=cluster_profiles.index, y='Monetary', data=cluster_profiles, ax=axes[2])
+axes[2].set_title('Ortalama Monetary')
+axes[2].set_ylabel('Toplam Harcama')
+axes[2].set_xlabel('Küme')
+
+plt.tight_layout()
+plt.suptitle('RFM Metriklerine Göre Müşteri Küme Profilleri', y=1.02, fontsize=16)
+plt.show()
+
+# 7. PCA ile Görselleştirme
+pca = PCA(n_components=2)
+rfm_pca = pca.fit_transform(rfm_scaled_df)
+rfm_pca_df = pd.DataFrame(rfm_pca, columns=['PC1', 'PC2'])
+rfm_pca_df['Cluster'] = clusters
+
+plt.figure(figsize=(10, 8))
+sns.scatterplot(x='PC1', y='PC2', hue='Cluster', data=rfm_pca_df, palette='viridis', style='Cluster', s=60, legend='full')
+plt.title('PCA ile Görselleştirilmiş Müşteri Kümeleri')
+plt.xlabel(f'Temel Bileşen 1 (Açıklanan Varyans: {pca.explained_variance_ratio_[0]:.2f})')
+plt.ylabel(f'Temel Bileşen 2 (Açıklanan Varyans: {pca.explained_variance_ratio_[1]:.2f})')
+plt.grid(True)
+plt.legend(title='Küme')
+plt.show()
+
+print("\nAnaliz tamamlandı. Kod, 4 farklı müşteri segmenti oluşturdu ve bu segmentlerin profillerini görselleştirdi.")
